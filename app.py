@@ -228,8 +228,8 @@ def main():
             st.markdown("- [Groq Console](https://console.groq.com)")
             st.markdown("- [Documentation](https://console.groq.com/docs)")
         else:
-            st.markdown("- [About This Tool](https://github.com)")
-            st.markdown("- [Report Issues](https://github.com)")
+            st.markdown("- [About This Tool](https://github.com/Red1-Rahman/Prompt-Eval)")
+            st.markdown("- [Report Issues](https://github.com/Red1-Rahman/Prompt-Eval/issues/new/choose)")
     
     # Main content
     if not st.session_state.groq_client:
