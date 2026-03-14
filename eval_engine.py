@@ -24,12 +24,35 @@ class EvaluationEngine:
         self.model_grader = ModelBasedGrader(groq_client)
         self.code_graders = CodeBasedGraders()
     
+    def _has_critical_format_failure(self, code_grades: Dict) -> bool:
+        """
+        Check if code-based grades contain critical formatting failures.
+        Critical failures: JSON validation, required keywords, mandatory formats
+        
+        Args:
+            code_grades: Dict of code-based grading results
+        
+        Returns:
+            True if critical format issue detected, False otherwise
+        """
+        critical_graders = {"json_validator", "keyword_checker", "format_validator"}
+        
+        for grader_name, grade_result in code_grades.items():
+            # Only check results from critical format validators
+            if grader_name in critical_graders:
+                if not grade_result.get("passed", False):
+                    return True
+        
+        return False
+    
     def evaluate_single_test_case(self, prompt: str, test_case: Dict,
                                    use_model_grading: bool = True,
                                    code_graders: Optional[List[str]] = None,
-                                   temperature: float = 0.7) -> Dict:
+                                   temperature: float = 0.7,
+                                   force_model_grading: bool = False) -> Dict:
         """
-        Evaluate a single test case with a given prompt (reusable unit)
+        Evaluate a single test case with a given prompt (reusable unit).
+        Runs code-based graders first to minimize token consumption.
         
         Args:
             prompt: The prompt to evaluate
@@ -37,9 +60,10 @@ class EvaluationEngine:
             use_model_grading: Whether to use LLM-based grading
             code_graders: List of code-based grader names to apply
             temperature: Temperature for prompt execution
+            force_model_grading: If True, skip token optimization and always grade with model
         
         Returns:
-            Result dict with response, grades, and metadata
+            Result dict with response, grades (code first, then model), and metadata
         """
         # Execute prompt with test input
         full_prompt = f"{prompt}\n\n{test_case['input']}"
@@ -51,33 +75,59 @@ class EvaluationEngine:
             "timestamp": datetime.now().isoformat()
         }
         
-        # Apply code-based grading
+        # RUN CODE-BASED GRADING FIRST (free, fast, minimal tokens)
+        code_grades = {}
+        has_code_failures = False
+        
         if code_graders:
-            result["code_grades"] = {}
             for grader_name in code_graders:
                 if hasattr(self.code_graders, grader_name):
                     grader_func = getattr(self.code_graders, grader_name)
-                    result["code_grades"][grader_name] = grader_func(response)
+                    code_grades[grader_name] = grader_func(response)
+            
+            result["code_grades"] = code_grades
+            has_code_failures = self._has_critical_format_failure(code_grades)
         
-        # Apply model-based grading
+        # CONDITIONAL MODEL-BASED GRADING (only if format checks pass or forced)
+        # This saves tokens by not sending obviously broken responses to LLM
         if use_model_grading:
-            result["model_grade"] = self.model_grader.grade_response(test_case, response)
+            should_grade = force_model_grading or not has_code_failures or not code_graders
+            
+            if should_grade:
+                result["model_grade"] = self.model_grader.grade_response(test_case, response)
+            else:
+                # Skipped model grading due to critical format failures
+                result["model_grade"] = {
+                    "score": 0,
+                    "reason": "Skipped model grading - critical format issues detected by code validators",
+                    "strengths": [],
+                    "weaknesses": ["Response failed format validation checks"],
+                    "is_technical_error": False,
+                    "skipped_reason": "format_failure"
+                }
         
         return result
     
     def run_evaluation(self, prompt: str, test_cases: List[Dict], 
                       use_model_grading: bool = True,
                       code_graders: Optional[List[str]] = None,
-                      temperature: float = 0.7) -> Dict:
+                      temperature: float = 0.7,
+                      force_model_grading: bool = False) -> Dict:
         """
-        Run complete evaluation of a prompt against test cases
+        Run complete evaluation of a prompt against test cases.
+        
+        **Token Optimization**: Code-based graders run first. If critical format 
+        issues are detected (invalid JSON, missing keywords, wrong format), 
+        model-based grading is skipped to save tokens. Set force_model_grading=True 
+        to evaluate all responses with the model.
         
         Args:
             prompt: The prompt to evaluate
             test_cases: List of test case dictionaries (format: {"input": ..., "expected_criteria": ...})
             use_model_grading: Whether to use LLM-based grading
-            code_graders: List of code-based grader names to apply
+            code_graders: List of code-based grader names to apply first
             temperature: Temperature for prompt execution
+            force_model_grading: If True, always run model grading regardless of code-based results
         
         Returns:
             Complete evaluation results with statistics
@@ -86,6 +136,10 @@ class EvaluationEngine:
         start_time = time.time()
         
         print(f"Running evaluation on {len(test_cases)} test cases...")
+        if code_graders:
+            print(f"  Code-based graders (fast): {', '.join(code_graders)}")
+            if use_model_grading and not force_model_grading:
+                print(f"  Model-based grading: Only if code validation passes (token optimization enabled)")
         
         for idx, test_case in enumerate(test_cases, 1):
             print(f"  Processing test case {idx}/{len(test_cases)}...", end="\r")
@@ -93,15 +147,25 @@ class EvaluationEngine:
                 prompt, test_case, 
                 use_model_grading=use_model_grading,
                 code_graders=code_graders,
-                temperature=temperature
+                temperature=temperature,
+                force_model_grading=force_model_grading
             )
             results.append(result)
         
         print(f"\nCompleted {len(test_cases)} test cases in {time.time() - start_time:.2f}s")
         
-        # Calculate overall statistics (exclude technical errors)
-        scores = [r["model_grade"]["score"] for r in results 
-                 if "model_grade" in r and not r["model_grade"].get("is_technical_error", False)]
+        # Calculate overall statistics (exclude technical errors and skipped grades)
+        scores = []
+        skipped_count = 0
+        
+        for r in results:
+            if "model_grade" in r:
+                grade = r["model_grade"]
+                # Don't count technical errors or skipped model grades
+                if not grade.get("is_technical_error", False) and not grade.get("skipped_reason"):
+                    scores.append(grade["score"])
+                elif grade.get("skipped_reason") == "format_failure":
+                    skipped_count += 1
         
         if not scores:
             # All requests failed - provide feedback
@@ -115,10 +179,12 @@ class EvaluationEngine:
             }
         else:
             stats = calculate_stats(scores)
-            # Track failed evaluations
+            # Track failed evaluations and skipped model grades
             failed = len(results) - len(scores)
             if failed > 0:
                 stats["failed_evaluations"] = failed
+            if skipped_count > 0:
+                stats["skipped_model_grades"] = skipped_count
         
         return {
             "prompt": prompt,
