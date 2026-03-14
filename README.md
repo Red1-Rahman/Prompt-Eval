@@ -7,9 +7,11 @@ A powerful prompt evaluation tool powered by Groq API. Evaluate, compare, and op
 ### Core Capabilities
 - 🤖 **Automated Test Case Generation** - Generate diverse, challenging test cases using Groq API
 - 📊 **Multi-Level Grading System**
-  - Code-based validators (length, JSON, keywords, regex, sentiment)
+  - Code-based validators (length, JSON, keywords, regex, sentiment) - run first
   - Model-based intelligent grading with detailed feedback
+  - Few-shot example support for better model-based grading
   - Custom grader templates
+- ⚡ **Token Optimization** - Code validators run first; model grading skipped on critical format failures (saves tokens!)
 - ⚖️ **Prompt Comparison** - Side-by-side evaluation of multiple prompt versions
 - 💡 **Auto-Improvement Suggestions** - Get actionable recommendations to enhance prompts
 - 📈 **Interactive Dashboard** - Beautiful Streamlit UI with charts and detailed results
@@ -21,6 +23,20 @@ A powerful prompt evaluation tool powered by Groq API. Evaluate, compare, and op
 - **Grading**: TextBlob for sentiment, custom validators
 - **Charts**: Plotly for interactive visualizations
 - **Storage**: Local JSON files
+
+## 📋 Test Case Format
+
+```json
+{
+  "input": "The task/prompt to evaluate",
+  "expected_criteria": "What the response should accomplish",
+  "format": "Optional - expected output format (json, python, regex, etc.)"
+}
+```
+
+## 🚀 Token Optimization
+
+Code-based validators run first and instantly catch format errors. If critical issues are found (invalid JSON, missing keywords), expensive model-based grading is **skipped automatically** to save tokens. Perfect for high-volume evaluations!
 
 
 ### Optional: Use Your Own API Key
