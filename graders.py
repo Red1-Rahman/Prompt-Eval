@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Optional
 from textblob import TextBlob
 from utils import GroqClient
 
@@ -206,6 +206,122 @@ Evaluate based on:
 2. Completeness - Does it meet the expected criteria?
 3. Format compliance - Is it properly formatted?
 4. Clarity - Is it clear and coherent?
+
+Return ONLY a JSON object with this exact structure:
+{{
+  "score": <number 1-10>,
+  "reason": "<brief explanation of the score>",
+  "strengths": ["strength 1", "strength 2"],
+  "weaknesses": ["weakness 1", "weakness 2"]
+}}"""
+        
+        try:
+            response_text = self.client.call(grading_prompt, temperature=0.3, max_tokens=500, json_mode=True)
+            
+            # Check if grading call itself failed
+            if response_text.startswith("Error:"):
+                return {
+                    "score": 0,
+                    "reason": "Grading service temporarily unavailable",
+                    "strengths": [],
+                    "weaknesses": ["API connection issue"],
+                    "is_technical_error": True
+                }
+            
+            result = json.loads(response_text)
+            
+            # Ensure score is valid
+            if "score" not in result:
+                result["score"] = 5
+            result["score"] = max(1, min(10, int(result["score"])))
+            
+            # Ensure reason exists
+            if "reason" not in result:
+                result["reason"] = "No specific reason provided"
+            
+            # Ensure arrays exist
+            if "strengths" not in result:
+                result["strengths"] = []
+            if "weaknesses" not in result:
+                result["weaknesses"] = []
+            
+            result["is_technical_error"] = False
+            return result
+            
+        except json.JSONDecodeError:
+            return {
+                "score": 0,
+                "reason": "Unable to parse grading response",
+                "strengths": [],
+                "weaknesses": ["API response format issue"],
+                "is_technical_error": True
+            }
+        except Exception as e:
+            return {
+                "score": 0,
+                "reason": f"Grading unavailable: {str(e)[:50]}",
+                "strengths": [],
+                "weaknesses": ["API connection issue"],
+                "is_technical_error": True
+            }
+    
+    def grade_response_with_examples(self, test_case: Dict, response: str, 
+                                       examples: Optional[List[Dict]] = None,
+                                       custom_criteria: str = "") -> Dict:
+        """
+        Grade a response using LLM with few-shot examples (in-context learning)
+        
+        Args:
+            test_case: Dict with 'input' and 'expected_criteria'
+            response: The LLM response to grade
+            examples: List of example dicts with 'input', 'output', 'score', 'reasoning' keys
+            custom_criteria: Optional additional grading criteria
+        
+        Returns:
+            Grading result with score, reasoning, strengths, and weaknesses
+        """
+        # Check if response is an error first
+        if response.startswith("Error:"):
+            return {
+                "score": 0,
+                "reason": "API error prevented response generation",
+                "strengths": [],
+                "weaknesses": ["API connection issue"],
+                "is_technical_error": True
+            }
+        
+        # Build few-shot examples section if provided
+        examples_section = ""
+        if examples:
+            examples_section = "\n\nHERE ARE SOME REFERENCE EXAMPLES:\n"
+            for i, example in enumerate(examples, 1):
+                examples_section += f"\nExample {i}:\n"
+                examples_section += f"INPUT: {example.get('input', 'N/A')}\n"
+                examples_section += f"OUTPUT: {example.get('output', 'N/A')}\n"
+                if 'score' in example:
+                    examples_section += f"SCORE: {example['score']}/10\n"
+                if 'reasoning' in example:
+                    examples_section += f"REASONING: {example['reasoning']}\n"
+        
+        grading_prompt = f"""Score this LLM response on a scale of 1-10.{examples_section}
+
+NOW EVALUATE THE FOLLOWING:
+
+INPUT: {test_case.get('input', 'N/A')}
+
+EXPECTED CRITERIA: {test_case.get('expected_criteria', 'General quality')}
+
+{"ADDITIONAL CRITERIA: " + custom_criteria if custom_criteria else ""}
+
+RESPONSE TO GRADE:
+{response}
+
+Evaluate based on:
+1. Accuracy - Does it address the input correctly?
+2. Completeness - Does it meet the expected criteria?
+3. Format compliance - Is it properly formatted?
+4. Clarity - Is it clear and coherent?
+5. Consistency with examples (if provided)
 
 Return ONLY a JSON object with this exact structure:
 {{

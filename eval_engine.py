@@ -7,13 +7,63 @@ from graders import ModelBasedGrader, CodeBasedGraders
 
 
 class EvaluationEngine:
-    """Main orchestrator for prompt evaluation"""
+    """
+    Main orchestrator for prompt evaluation.
+    
+    Test cases should follow this standard format:
+    {
+        "input": "The task/prompt to evaluate",
+        "expected_criteria": "What the response should accomplish",
+        "format": "Optional - expected output format (json, python, regex, etc.)"
+    }
+    """
     
     def __init__(self, groq_client: GroqClient):
         self.client = groq_client
         self.dataset_gen = DatasetGenerator(groq_client)
         self.model_grader = ModelBasedGrader(groq_client)
         self.code_graders = CodeBasedGraders()
+    
+    def evaluate_single_test_case(self, prompt: str, test_case: Dict,
+                                   use_model_grading: bool = True,
+                                   code_graders: Optional[List[str]] = None,
+                                   temperature: float = 0.7) -> Dict:
+        """
+        Evaluate a single test case with a given prompt (reusable unit)
+        
+        Args:
+            prompt: The prompt to evaluate
+            test_case: Single test case dict with 'input' and 'expected_criteria'
+            use_model_grading: Whether to use LLM-based grading
+            code_graders: List of code-based grader names to apply
+            temperature: Temperature for prompt execution
+        
+        Returns:
+            Result dict with response, grades, and metadata
+        """
+        # Execute prompt with test input
+        full_prompt = f"{prompt}\n\n{test_case['input']}"
+        response = self.client.call(full_prompt, temperature=temperature, max_tokens=1024)
+        
+        result = {
+            "test_case": test_case,
+            "response": response,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Apply code-based grading
+        if code_graders:
+            result["code_grades"] = {}
+            for grader_name in code_graders:
+                if hasattr(self.code_graders, grader_name):
+                    grader_func = getattr(self.code_graders, grader_name)
+                    result["code_grades"][grader_name] = grader_func(response)
+        
+        # Apply model-based grading
+        if use_model_grading:
+            result["model_grade"] = self.model_grader.grade_response(test_case, response)
+        
+        return result
     
     def run_evaluation(self, prompt: str, test_cases: List[Dict], 
                       use_model_grading: bool = True,
@@ -24,13 +74,13 @@ class EvaluationEngine:
         
         Args:
             prompt: The prompt to evaluate
-            test_cases: List of test case dictionaries
+            test_cases: List of test case dictionaries (format: {"input": ..., "expected_criteria": ...})
             use_model_grading: Whether to use LLM-based grading
             code_graders: List of code-based grader names to apply
             temperature: Temperature for prompt execution
         
         Returns:
-            Complete evaluation results
+            Complete evaluation results with statistics
         """
         results = []
         start_time = time.time()
@@ -39,29 +89,12 @@ class EvaluationEngine:
         
         for idx, test_case in enumerate(test_cases, 1):
             print(f"  Processing test case {idx}/{len(test_cases)}...", end="\r")
-            
-            # Execute prompt with test input
-            full_prompt = f"{prompt}\n\n{test_case['input']}"
-            response = self.client.call(full_prompt, temperature=temperature, max_tokens=1024)
-            
-            result = {
-                "test_case": test_case,
-                "response": response,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Apply code-based grading
-            if code_graders:
-                result["code_grades"] = {}
-                for grader_name in code_graders:
-                    if hasattr(self.code_graders, grader_name):
-                        grader_func = getattr(self.code_graders, grader_name)
-                        result["code_grades"][grader_name] = grader_func(response)
-            
-            # Apply model-based grading
-            if use_model_grading:
-                result["model_grade"] = self.model_grader.grade_response(test_case, response)
-            
+            result = self.evaluate_single_test_case(
+                prompt, test_case, 
+                use_model_grading=use_model_grading,
+                code_graders=code_graders,
+                temperature=temperature
+            )
             results.append(result)
         
         print(f"\nCompleted {len(test_cases)} test cases in {time.time() - start_time:.2f}s")
